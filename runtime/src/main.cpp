@@ -6,6 +6,7 @@
 #include "cafe/vfs.h"
 
 #include "host/audio.h"
+#include "host/paths.h"
 #include "host/window.h"
 #include "install.h"
 #include "title/presentation.h"
@@ -18,6 +19,10 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace cafe::os {
 void init_heaps(uint32_t mem2_begin);
@@ -38,9 +43,36 @@ void usage(const char* argv0) {
                  "  FOLDER (chosen in a dialog when not given) and adds it to the\n"
                  "  application menu; --update copies this executable into the\n"
                  "  install after a rebuild. Saves go to $TTT2_SAVE_DIR, default\n"
+#ifdef _WIN32
+                 "  %%APPDATA%%\\ttt2\\save.\n",
+#else
                  "  ~/.local/share/ttt2/save.\n",
+#endif
                  argv0, argv0, argv0);
 }
+
+#ifdef _WIN32
+// A program of the windows subsystem has no console of its own. Started
+// from one, it writes there (the prompt comes back at once, as with any
+// windowed program); started from the desktop, its messages go to
+// %LOCALAPPDATA%\ttt2\ttt2.log. Returns whether there is a console.
+bool attach_console() {
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE* f = nullptr;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+        freopen_s(&f, "CONIN$", "r", stdin);
+        SetConsoleOutputCP(CP_UTF8);
+        return true;
+    }
+    std::error_code ec;
+    const std::filesystem::path dir = cafe::host::cache_dir() / "ttt2";
+    std::filesystem::create_directories(dir, ec);
+    FILE* f = nullptr;
+    _wfreopen_s(&f, (dir / "ttt2.log").c_str(), L"w", stderr);
+    return false;
+}
+#endif
 
 // Objects the game imports as data are created by the library that owns
 // them; anything the runtime does not provide yet stays zeroed.
@@ -67,9 +99,17 @@ uint32_t guest_strdup(const char* text) {
 
 int main(int argc, char** argv) {
     using namespace cafe;
+#ifdef _WIN32
+    const bool console = attach_console();
+#endif
     if (argc >= 2 && (std::strcmp(argv[1], "--install") == 0 || std::strcmp(argv[1], "--update") == 0)) {
         return install::run(std::vector<std::string>(argv + 1, argv + argc));
     }
+#ifdef _WIN32
+    // Opened from the desktop with no game installed yet: the installer,
+    // with its dialogs.
+    if (argc == 1 && !console && !install::installed_game()) return install::run({"--install"});
+#endif
     if (argc >= 2 && (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0)) {
         usage(argv[0]);
         return 0;
@@ -88,8 +128,7 @@ int main(int argc, char** argv) {
     if (const char* save = std::getenv("TTT2_SAVE_DIR")) {
         vfs::set_save_root(save);
     } else {
-        const char* home = std::getenv("HOME");
-        vfs::set_save_root(std::filesystem::path(home ? home : ".") / ".local/share/ttt2/save");
+        vfs::set_save_root(host::data_dir() / "ttt2/save");
     }
     const auto rpx = vfs::read_whole("/vol/code/Tekken.rpx");
     if (!rpx) fatal("the game source has no code/Tekken.rpx");

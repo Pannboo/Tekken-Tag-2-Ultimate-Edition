@@ -1,6 +1,7 @@
 // Draws: shaders (translated and compiled on first use), pipelines, the
 // per-draw constants and resources, index conversion, and the draw.
 
+#include "host/paths.h"
 #include "gpu/vulkan/renderer.h"
 
 #include "gpu/latte.h"
@@ -107,13 +108,12 @@ struct PipelineKey {
     uint32_t depth_clamp;
 };
 
-// ~/.cache/ttt2 (or $XDG_CACHE_HOME/ttt2): compiled shaders and pipelines.
+// ~/.cache/ttt2 (or $XDG_CACHE_HOME/ttt2; %LOCALAPPDATA%\ttt2 on Windows):
+// compiled shaders and pipelines.
 std::filesystem::path cache_directory() {
     static const std::filesystem::path dir = [] {
-        std::filesystem::path d;
-        if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) d = x;
-        else if (const char* h = std::getenv("HOME")) d = std::filesystem::path(h) / ".cache";
-        else return std::filesystem::path();
+        std::filesystem::path d = host::cache_dir();
+        if (d.empty()) return std::filesystem::path();
         d /= "ttt2";
         std::error_code ec;
         std::filesystem::create_directories(d / "spirv", ec);

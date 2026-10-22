@@ -2,10 +2,14 @@
 #include "cafe/ppc_ops.h"
 #include "cafe/runtime.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -33,8 +37,9 @@ void print_backtrace(const PPCContext& ctx) {
     }
 }
 
-void fault_handler(int signal, siginfo_t* info, void* context) {
-    const auto host = reinterpret_cast<uintptr_t>(info->si_addr);
+// A fault at `host`, from the code at `pc`: reported with its guest address
+// when it is in guest memory, then the guest state; the process ends.
+[[noreturn]] void report_fault(uintptr_t host, uintptr_t pc, const char* kind, int code) {
     const auto base = reinterpret_cast<uintptr_t>(guest_base());
     if (base != 0 && host >= base && host - base < (uint64_t{1} << 32) + 0x10000) {
         const uint64_t guest = host - base;
@@ -46,22 +51,55 @@ void fault_handler(int signal, siginfo_t* info, void* context) {
                          static_cast<unsigned long long>(t_current->r[1] - guest));
         }
     } else {
-        std::fprintf(stderr, "\nhost fault (signal %d) at %p\n", signal, info->si_addr);
+        std::fprintf(stderr, "\nhost fault (%s %d) at 0x%llx\n", kind, code,
+                     static_cast<unsigned long long>(host));
     }
     // Where in the recompiled code: `addr2line -f -e <executable> <offset>`
     // names the guest function (sub_XXXXXXXX).
-    const auto* uc = static_cast<const ucontext_t*>(context);
-    const auto pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    char name[MAX_PATH];
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(pc), &module) &&
+        GetModuleFileNameA(module, name, sizeof name) != 0) {
+        std::fprintf(stderr, "host code: %s+0x%llx\n", name,
+                     static_cast<unsigned long long>(pc - reinterpret_cast<uintptr_t>(module)));
+    }
+#else
     Dl_info where{};
     if (dladdr(reinterpret_cast<void*>(pc), &where) && where.dli_fname != nullptr) {
         std::fprintf(stderr, "host code: %s+0x%llx\n", where.dli_fname,
                      static_cast<unsigned long long>(pc - reinterpret_cast<uintptr_t>(where.dli_fbase)));
     }
+#endif
     if (t_current != nullptr) {
         print_guest_state(*t_current);
     }
-    std::_Exit(128 + signal);
+    std::fflush(stderr);
+    std::_Exit(128 + (code & 0x7F));
 }
+
+#ifdef _WIN32
+
+LONG WINAPI fault_handler(EXCEPTION_POINTERS* info) {
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR) {
+        return EXCEPTION_CONTINUE_SEARCH; // C++ exceptions, breakpoints, guard pages
+    }
+    const auto host = static_cast<uintptr_t>(info->ExceptionRecord->ExceptionInformation[1]);
+    report_fault(host, static_cast<uintptr_t>(info->ContextRecord->Rip), "exception",
+                 static_cast<int>(code & 0xFFFF));
+}
+
+#else
+
+void fault_handler(int signal, siginfo_t* info, void* context) {
+    const auto* uc = static_cast<const ucontext_t*>(context);
+    report_fault(reinterpret_cast<uintptr_t>(info->si_addr),
+                 static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]), "signal", signal);
+}
+
+#endif
 
 } // namespace
 
@@ -96,6 +134,9 @@ void fatal(const char* format, ...) {
 }
 
 void install_fault_handler() {
+#ifdef _WIN32
+    AddVectoredExceptionHandler(1, fault_handler);
+#else
     static char alternate_stack[64 * 1024];
     stack_t stack{};
     stack.ss_sp = alternate_stack;
@@ -106,6 +147,7 @@ void install_fault_handler() {
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction(SIGSEGV, &action, nullptr);
     sigaction(SIGBUS, &action, nullptr);
+#endif
 }
 
 } // namespace cafe

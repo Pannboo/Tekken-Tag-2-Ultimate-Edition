@@ -25,6 +25,7 @@
 // which by then includes the next frame. Without such a queue it falls back
 // to a blit on the rendering queue (queue_mutex_ serialises its use).
 
+#include "os/kernel.h"
 #include "gpu/vulkan/renderer.h"
 
 #include "gpu/gpu.h"
@@ -415,7 +416,7 @@ void Renderer::choose_presentation(double hz) {
 }
 
 void Renderer::presenter_main() {
-    pthread_setname_np(pthread_self(), "present");
+    os::name_host_thread("present");
     // The mode follows the window's display: chosen again when the window
     // moves to another display or its mode changes, or when the display
     // turns out to refresh at another rate than reported.

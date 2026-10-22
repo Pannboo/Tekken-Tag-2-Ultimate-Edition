@@ -49,6 +49,8 @@ add_library(cafe_runtime OBJECT
     src/gpu/vulkan/targets.cpp
     src/gpu/vulkan/textures.cpp
     src/host/audio.cpp
+    src/host/file.cpp
+    src/host/paths.cpp
     src/host/window.cpp
     src/gx2/cbpool.cpp
     src/gx2/display.cpp
@@ -68,10 +70,16 @@ find_package(Vulkan REQUIRED)
 find_package(SDL3 REQUIRED CONFIG)
 # GLSL -> SPIR-V at run time.
 find_library(SHADERC_LIBRARY NAMES shaderc_shared REQUIRED)
+find_path(SHADERC_INCLUDE_DIR shaderc/shaderc.h REQUIRED)
+target_include_directories(cafe_runtime SYSTEM PUBLIC ${SHADERC_INCLUDE_DIR})
 target_link_libraries(cafe_runtime PUBLIC cafe_rpx cafe_title OpenSSL::Crypto ZArchive::zarchive amd_addrlib cafe_latte
     Vulkan::Vulkan SDL3::SDL3 ${SHADERC_LIBRARY})
 # Vulkan structures are initialised with only their sType.
 target_compile_options(cafe_runtime PRIVATE -Wall -Wextra -Wpedantic -Wno-missing-field-initializers)
+if(WIN32)
+    # Known folders, COM (the Start Menu shortcut) and its interface ids.
+    target_link_libraries(cafe_runtime PUBLIC ole32 shell32 uuid)
+endif()
 
 # The title's file formats and the pictures and texts made from them
 # (title/): no runtime, so tests use them on synthetic data.
@@ -99,5 +107,6 @@ target_compile_features(cafe_latte PUBLIC cxx_std_20)
 target_compile_options(cafe_latte PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(cafe-shader src/latte/cafe_shader_main.cpp)
+target_include_directories(cafe-shader SYSTEM PRIVATE ${SHADERC_INCLUDE_DIR})
 target_link_libraries(cafe-shader PRIVATE cafe_latte ${SHADERC_LIBRARY})
 target_compile_options(cafe-shader PRIVATE -Wall -Wextra -Wpedantic)

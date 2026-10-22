@@ -1,10 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
 project(ttt2_recomp_tools LANGUAGES C CXX)
 
-if(NOT UNIX)
-    message(FATAL_ERROR "The safe extraction utility currently requires a POSIX host.")
+# Linux (the original host) or Windows (clang targeting mingw-w64, built with
+# tools/build_windows.py or in MSYS2's CLANG64 environment).
+if(NOT UNIX AND NOT WIN32)
+    message(FATAL_ERROR "The port builds for Linux and Windows.")
+endif()
+if(WIN32)
+    # Windows 10 as the oldest system; no min/max macros; setjmp/longjmp
+    # without SEH unwinding, as on Linux (OSExitThread leaves generated code
+    # with longjmp).
+    add_compile_definitions(_WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN __USE_MINGW_SETJMP_NON_SEH)
+    enable_language(RC)
 endif()
 
+# (ZArchive would link its own tool, and so everything using its library,
+# with -static on Windows; the port links the libraries it ships with.)
+set(BUILD_STATIC_TOOL OFF CACHE BOOL "ZArchive: link its tool statically")
 add_subdirectory(third_party/ZArchive EXCLUDE_FROM_ALL)
 
 # AMD's surface address library (MIT), in its R600 variant for the Wii U GPU:
@@ -48,4 +60,11 @@ if(TTT2_GENERATED_DIR)
     add_executable(ttt2 runtime/src/main.cpp)
     target_link_libraries(ttt2 PRIVATE cafe_runtime ttt2_generated)
     target_compile_options(ttt2 PRIVATE -Wall -Wextra -Wpedantic)
+    if(WIN32)
+        # A windowed program (no console of its own; see main.cpp) whose
+        # manifest makes the narrow Windows APIs take UTF-8, so paths and
+        # arguments are the same bytes as on Linux.
+        target_sources(ttt2 PRIVATE runtime/windows/ttt2.rc)
+        set_target_properties(ttt2 PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
 endif()

@@ -13,13 +13,20 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#else
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
 namespace {
+#ifndef _WIN32
 class Fd {
 public:
     explicit Fd(int value = -1) : value_(value) {}
@@ -39,6 +46,7 @@ public:
 private:
     int value_;
 };
+#endif
 
 [[noreturn]] void system_error(const std::string& operation) {
     const int error = errno;
@@ -98,6 +106,79 @@ std::vector<Entry> inventory(ZArchiveReader& reader) {
     return files;
 }
 
+bool analysis_file(const std::string& path) {
+    // WUA paths are TITLEID_VERSION/code/... and TITLEID_VERSION/meta/....
+    const auto first = path.find('/');
+    if (first == std::string::npos) return false;
+    const auto second = path.find('/', first + 1);
+    if (second == std::string::npos) return false;
+    const auto directory = path.substr(first + 1, second - first - 1);
+    return directory == "code" || directory == "meta";
+}
+
+#ifdef _WIN32
+
+// Windows has no openat: the output folder is created with every
+// component checked not to be a link, and each file is created new
+// (existing files are never overwritten) under that folder.
+using Root = fs::path;
+
+void refuse_links(const fs::path& path) {
+    std::error_code ec;
+    fs::path current;
+    for (const auto& component : path) {
+        current /= component;
+        if (fs::is_symlink(current, ec)) throw std::runtime_error("Refusing to follow the link " + current.string());
+    }
+}
+
+Root output_directory(const fs::path& output) {
+    const auto absolute = fs::absolute(output).lexically_normal();
+    std::error_code ec;
+    fs::create_directories(absolute, ec);
+    if (ec) throw std::runtime_error("Cannot create directory " + absolute.string() + ": " + ec.message());
+    refuse_links(absolute);
+    return absolute;
+}
+
+void extract_file(ZArchiveReader& reader, const Entry& entry, const Root& root) {
+    const fs::path target = root / fs::path(entry.path);
+    std::error_code ec;
+    fs::create_directories(target.parent_path(), ec);
+    if (ec) throw std::runtime_error("Cannot create directory " + target.parent_path().string());
+    refuse_links(target);
+    const int fd = _wopen(target.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
+                          _S_IREAD | _S_IWRITE);
+    if (fd < 0)
+        system_error("Cannot create output file (existing files are never overwritten) " + entry.path);
+    try {
+        std::array<unsigned char, 1024 * 1024> buffer{};
+        uint64_t offset = 0;
+        while (offset < entry.size) {
+            const auto length = std::min<uint64_t>(buffer.size(), entry.size - offset);
+            if (reader.ReadFromFile(entry.node, offset, length, buffer.data()) != length)
+                throw std::runtime_error("Short archive read: " + entry.path);
+            size_t written = 0;
+            while (written < length) {
+                const int result = _write(fd, buffer.data() + written, static_cast<unsigned>(length - written));
+                if (result < 0) system_error("Cannot write " + entry.path);
+                if (result == 0) throw std::runtime_error("Short output write: " + entry.path);
+                written += static_cast<size_t>(result);
+            }
+            offset += length;
+        }
+        if (_close(fd) != 0) system_error("Cannot close output file " + entry.path);
+    } catch (...) {
+        _close(fd);
+        fs::remove(target, ec);
+        throw;
+    }
+}
+
+#else
+
+using Root = Fd;
+
 Fd child_directory(int parent, const std::string& name) {
     if (::mkdirat(parent, name.c_str(), 0755) != 0 && errno != EEXIST)
         system_error("Cannot create directory " + name);
@@ -118,17 +199,8 @@ Fd output_directory(const fs::path& output) {
     return current;
 }
 
-bool analysis_file(const std::string& path) {
-    // WUA paths are TITLEID_VERSION/code/... and TITLEID_VERSION/meta/....
-    const auto first = path.find('/');
-    if (first == std::string::npos) return false;
-    const auto second = path.find('/', first + 1);
-    if (second == std::string::npos) return false;
-    const auto directory = path.substr(first + 1, second - first - 1);
-    return directory == "code" || directory == "meta";
-}
-
-void extract_file(ZArchiveReader& reader, const Entry& entry, int root) {
+void extract_file(ZArchiveReader& reader, const Entry& entry, const Root& root_fd) {
+    const int root = root_fd.get();
     const int duplicate = ::fcntl(root, F_DUPFD_CLOEXEC, 0);
     if (duplicate < 0) system_error("Cannot duplicate output directory handle");
     Fd parent(duplicate);
@@ -163,6 +235,8 @@ void extract_file(ZArchiveReader& reader, const Entry& entry, int root) {
         throw;
     }
 }
+
+#endif
 } // namespace
 
 int main(int argc, char** argv) {
@@ -185,12 +259,12 @@ int main(int argc, char** argv) {
             for (const auto& entry : files)
                 std::cout << entry.path << '\t' << entry.size << '\n';
         } else {
-            auto root = output_directory(argv[3]);
+            const Root root = output_directory(argv[3]);
             uint64_t bytes = 0;
             size_t count = 0;
             for (const auto& entry : files) {
                 if (analysis && !analysis_file(entry.path)) continue;
-                extract_file(*reader, entry, root.get());
+                extract_file(*reader, entry, root);
                 bytes += entry.size;
                 ++count;
                 std::cout << entry.path << '\n';

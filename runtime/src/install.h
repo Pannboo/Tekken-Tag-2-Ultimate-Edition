@@ -6,13 +6,14 @@
 // entry. The installed executable, or this one started without arguments,
 // then finds the game by itself.
 //
-// <install folder>/Tekken Tag Tournament 2   the executable
-// <install folder>/icon.png                  meta/iconTex.tga
+// <install folder>/Tekken Tag Tournament 2   the executable (.exe on Windows, with its .dll files)
+// <install folder>/icon.png                  meta/iconTex.tga (icon.ico too on Windows)
 // <install folder>/game/                     code/, content/, meta/ of the title
 // <install folder>/.ttt2-install             written last: the install is complete
-// $XDG_CONFIG_HOME/ttt2/installed            the install folder
+// $XDG_CONFIG_HOME/ttt2/installed            the install folder (%APPDATA%\ttt2\installed on Windows)
 // $XDG_DATA_HOME/applications/ttt2.desktop   "Tekken Tag Tournament 2" in the menu
-//                                            (ttt2 is the window's app id)
+//                                            (ttt2 is the window's app id); on Windows a
+//                                            Start Menu shortcut
 
 #include <cstdint>
 #include <filesystem>

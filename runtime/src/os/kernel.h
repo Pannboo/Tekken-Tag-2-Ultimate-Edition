@@ -15,8 +15,8 @@
 #include <condition_variable>
 #include <csetjmp>
 #include <cstdint>
+#include <ctime>
 #include <mutex>
-#include <pthread.h>
 #include <string>
 
 namespace cafe::os {
@@ -54,10 +54,27 @@ be<T>& field(uint32_t object, uint32_t offset) {
     return *guest<be<T>>(object + offset);
 }
 
+// A host thread (pthread or Win32), started by start_host_thread.
+struct HostThread {
+#ifdef _WIN32
+    void* handle = nullptr;
+#else
+    unsigned long id = 0; // pthread_t
+#endif
+};
+// Runs `fn(argument)` on a new host thread with `stack_size` bytes of stack;
+// a detached thread's handle is released at once, else join_host_thread
+// waits for it. False if no thread could be made.
+bool start_host_thread(HostThread& thread, void* (*fn)(void*), void* argument, size_t stack_size,
+                       bool detached);
+void join_host_thread(HostThread& thread);
+// Names the calling host thread for debuggers and profilers.
+void name_host_thread(const char* name);
+
 struct Thread {
     uint32_t guest = 0; // OSThread
     PPCContext ctx{};
-    pthread_t host{};
+    HostThread host{};
     bool host_started = false;
     bool finished = false; // entry returned or OSExitThread ran
     bool interrupts_disabled = false;
@@ -108,6 +125,8 @@ void reacquire_interrupt_lock_after_wait(KernelLock& lock, Thread* self, bool wa
 
 // OSTicksToCalendarTime into the OSCalendarTime at `calendar`.
 void ticks_to_calendar_time(int64_t ticks, uint32_t calendar);
+// The local time zone's offset from UTC at `when`, in seconds.
+int64_t utc_offset_seconds(time_t when);
 
 // The default heap, allocated through the MEMAllocFromDefaultHeapEx /
 // MEMFreeToDefaultHeap pointers the title may have replaced.

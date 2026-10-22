@@ -14,7 +14,96 @@
 #include <thread>
 #include <unordered_map>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#else
+#include <pthread.h>
+#endif
+
 namespace cafe::os {
+
+#ifdef _WIN32
+
+namespace {
+struct HostThreadStart {
+    void* (*fn)(void*);
+    void* argument;
+};
+unsigned __stdcall host_thread_entry(void* p) {
+    const HostThreadStart start = *static_cast<HostThreadStart*>(p);
+    delete static_cast<HostThreadStart*>(p);
+    start.fn(start.argument);
+    return 0;
+}
+} // namespace
+
+bool start_host_thread(HostThread& thread, void* (*fn)(void*), void* argument, size_t stack_size,
+                       bool detached) {
+    auto* start = new HostThreadStart{fn, argument};
+    // The size reserves address space; only what the thread touches is
+    // committed (as a pthread stack), rather than all of it up front.
+    const uintptr_t handle = _beginthreadex(nullptr, static_cast<unsigned>(stack_size), host_thread_entry, start,
+                                            STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    if (handle == 0) {
+        delete start;
+        return false;
+    }
+    if (detached) {
+        CloseHandle(reinterpret_cast<HANDLE>(handle));
+        thread.handle = nullptr;
+    } else {
+        thread.handle = reinterpret_cast<HANDLE>(handle);
+    }
+    return true;
+}
+
+void join_host_thread(HostThread& thread) {
+    if (thread.handle == nullptr) return;
+    WaitForSingleObject(thread.handle, INFINITE);
+    CloseHandle(thread.handle);
+    thread.handle = nullptr;
+}
+
+void name_host_thread(const char* name) {
+    // SetThreadDescription (Windows 10 1607): looked up, so older systems
+    // just lack the names.
+    using Fn = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+    static const Fn set_description = [] {
+        const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+        return kernel ? reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(kernel, "SetThreadDescription")))
+                      : nullptr;
+    }();
+    if (set_description == nullptr) return;
+    wchar_t wide[64];
+    size_t i = 0;
+    for (; name[i] != '\0' && i + 1 < sizeof wide / sizeof wide[0]; ++i) wide[i] = static_cast<wchar_t>(name[i]);
+    wide[i] = L'\0';
+    set_description(GetCurrentThread(), wide);
+}
+
+#else
+
+bool start_host_thread(HostThread& thread, void* (*fn)(void*), void* argument, size_t stack_size,
+                       bool detached) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack_size);
+    pthread_t id;
+    const int result = pthread_create(&id, &attr, fn, argument);
+    pthread_attr_destroy(&attr);
+    if (result != 0) return false;
+    if (detached) pthread_detach(id);
+    thread.id = static_cast<unsigned long>(id);
+    return true;
+}
+
+void join_host_thread(HostThread& thread) { pthread_join(static_cast<pthread_t>(thread.id), nullptr); }
+
+void name_host_thread(const char* name) { pthread_setname_np(pthread_self(), name); }
+
+#endif
+
 namespace {
 
 using namespace osthread;
@@ -116,7 +205,7 @@ void* host_main(void* argument) {
     // "OSThread address/core", for debuggers and profilers.
     char name[16];
     std::snprintf(name, sizeof(name), "%08X/%d", t->guest, t->core);
-    pthread_setname_np(pthread_self(), name);
+    name_host_thread(name);
     t_current = t;
     set_current_context(&t->ctx);
     uint32_t exit_value;
@@ -131,15 +220,10 @@ void* host_main(void* argument) {
     return nullptr;
 }
 
-void start_host_thread(Thread* t) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, kHostStackSize);
-    if (pthread_create(&t->host, &attr, host_main, t) != 0) {
+void start_guest_host_thread(Thread* t) {
+    if (!start_host_thread(t->host, host_main, t, kHostStackSize, true)) {
         fatal("cannot create a host thread for guest thread 0x%08X", t->guest);
     }
-    pthread_attr_destroy(&attr);
-    pthread_detach(t->host);
     t->host_started = true;
 }
 
@@ -213,13 +297,10 @@ int run_main_thread(uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack
     {
         KernelLock lock(g_kernel);
         g_system_thread = make_internal_thread("cafe system", 0x10000, 2);
-        pthread_t system;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, kHostStackSize);
-        pthread_create(&system, &attr, system_thread_main, nullptr);
-        pthread_attr_destroy(&attr);
-        pthread_detach(system);
+        HostThread system;
+        if (!start_host_thread(system, system_thread_main, nullptr, kHostStackSize, true)) {
+            fatal("cannot create the system thread");
+        }
     }
 
     // The main thread runs on core 1 with the stack size from the RPX file
@@ -242,13 +323,9 @@ int run_main_thread(uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack
         set_state(thread, kRunning);
         g_threads[thread] = t;
     }
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, kHostStackSize);
-    pthread_t host;
-    pthread_create(&host, &attr, host_main, t);
-    pthread_attr_destroy(&attr);
-    pthread_join(host, nullptr);
+    HostThread host;
+    if (!start_host_thread(host, host_main, t, kHostStackSize, false)) fatal("cannot create the main thread");
+    join_host_thread(host);
     // Returning from the RPX entry point ends the process with its result.
     return static_cast<int32_t>(field<uint32_t>(thread, kExitValue));
 }
@@ -305,7 +382,7 @@ int32_t OSResumeThread(GuestAddress thread) {
         suspend = previous - 1;
         if (previous == 1 && !t->host_started) {
             set_state(thread.value, kRunning);
-            start_host_thread(t);
+            start_guest_host_thread(t);
         }
     }
     return previous;

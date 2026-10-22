@@ -7,7 +7,12 @@
 
 #include "cafe/ppc_ops.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #include <bit>
 #include <cfloat>
@@ -28,12 +33,20 @@ struct Range { uint32_t begin, end; };
 inline constexpr Range kRandomised[] = {{0x00000000, 0x00008000}, {0x00020000, 0x00058000}};
 
 inline uint8_t* reserve_space() {
+#ifdef _WIN32
+    void* p = VirtualAlloc(nullptr, (uint64_t{1} << 32) + 0x10000, MEM_RESERVE, PAGE_NOACCESS);
+    if (p == nullptr) std::abort();
+    auto* base = static_cast<uint8_t*>(p);
+    VirtualAlloc(base, kLowEnd, MEM_COMMIT, PAGE_READWRITE);
+    VirtualAlloc(base + kHighBegin, 0x20000, MEM_COMMIT, PAGE_READWRITE);
+#else
     void* p = mmap(nullptr, (uint64_t{1} << 32) + 0x10000, PROT_NONE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) std::abort();
     auto* base = static_cast<uint8_t*>(p);
     mprotect(base, kLowEnd, PROT_READ | PROT_WRITE);
     mprotect(base + kHighBegin, 0x20000, PROT_READ | PROT_WRITE);
+#endif
     return base;
 }
 

@@ -134,15 +134,32 @@ void LCStoreDMABlocks(GuestAddress memory, GuestAddress cache, uint32_t blocks) 
 }
 
 // ------------------------------------------------------------------- time
+} // namespace
+
+int64_t utc_offset_seconds(time_t when) {
+    struct tm local{}, utc{};
+#ifdef _WIN32
+    if (localtime_s(&local, &when) != 0 || gmtime_s(&utc, &when) != 0) return 0;
+#else
+    if (localtime_r(&when, &local) == nullptr || gmtime_r(&when, &utc) == nullptr) return 0;
+#endif
+    // The difference of the two clock readings of the same instant, the
+    // date's days apart included (never more than a day).
+    int64_t days = local.tm_yday - utc.tm_yday;
+    if (local.tm_year != utc.tm_year) days = local.tm_year > utc.tm_year ? 1 : -1;
+    return days * 86400 + (local.tm_hour - utc.tm_hour) * 3600 + (local.tm_min - utc.tm_min) * 60 +
+           (local.tm_sec - utc.tm_sec);
+}
+
+namespace {
+
 // Calendar ticks count from 2000-01-01 00:00:00 local time; the system time
 // counts from boot.
 int64_t ticks_since_2000() {
     const auto now = std::chrono::system_clock::now();
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     const time_t seconds = static_cast<time_t>(ns / 1000000000);
-    struct tm local;
-    localtime_r(&seconds, &local);
-    const int64_t local_ns = ns + int64_t{local.tm_gmtoff} * 1000000000;
+    const int64_t local_ns = ns + utc_offset_seconds(seconds) * 1000000000;
     const int64_t since_2000 = local_ns - kUnixTo2000 * 1000000000;
     return since_2000 / 1000000000 * static_cast<int64_t>(kTimerHz) +
            since_2000 % 1000000000 * static_cast<int64_t>(kTimerHz) / 1000000000;

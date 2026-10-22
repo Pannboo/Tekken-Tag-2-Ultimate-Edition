@@ -200,7 +200,7 @@ void retire_later(const Retirement& r) {
 
 void retire(uint64_t timestamp);
 void retirement_main() {
-    pthread_setname_np(pthread_self(), "gpu retire");
+    os::name_host_thread("gpu retire");
     for (;;) {
         Retirement r;
         {
@@ -545,7 +545,7 @@ void retire(uint64_t timestamp) {
 }
 
 void command_processor_main() {
-    pthread_setname_np(pthread_self(), "gpu");
+    os::name_host_thread("gpu");
     for (;;) {
         Submission s;
         {

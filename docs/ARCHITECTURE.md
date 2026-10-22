@@ -62,6 +62,22 @@ the reachability bound sound.
 
 ## Runtime (native Cafe OS)
 
+Hosts: Linux (the original) and Windows (clang for mingw-w64, lld, libc++;
+`tools/build_windows.py`, `cmake/toolchain-windows-llvm-mingw.cmake`). What
+differs between them is kept in a few places: guest memory
+(`memory.cpp`: mmap/mprotect or VirtualAlloc reserve/commit), the fault
+handler (`diagnostics.cpp`: SIGSEGV or a vectored exception handler), host
+threads (`os/kernel.h`: `HostThread`, pthreads or `_beginthreadex` with the
+stack size as a reservation), files by descriptor with positional reads
+(`host/file.cpp`: pread/pwrite or ReadFile/WriteFile with an offset), the
+user's folders and the program's path (`host/paths.cpp`: XDG or the known
+folders) and the installer's launcher (a .desktop file or a Start Menu
+shortcut). Generated code is the same: COFF has weak aliases and weak
+definitions, so overriding a `sub_XXXXXXXX` works as on ELF (checked with
+lld). On Windows the C++ runtime is linked statically, `setjmp` is the
+non-SEH form (OSExitThread leaves generated code with `longjmp`) and the
+program's manifest makes the narrow APIs UTF-8.
+
 Implemented in host C++, no guest-code interpretation:
 
 1. **coreinit**: heaps, threads (guest thread = host thread), mutex /

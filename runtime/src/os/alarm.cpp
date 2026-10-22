@@ -29,7 +29,7 @@ constexpr uint64_t kTimerHz = 62156250;
 std::multimap<uint64_t, uint32_t> g_schedule; // fire time (system ticks) -> alarm
 std::set<uint32_t> g_armed;
 Thread* g_alarm_thread = nullptr;
-pthread_t g_alarm_host;
+HostThread g_alarm_host;
 
 void disarm(uint32_t alarm) {
     if (!g_armed.erase(alarm)) return;
@@ -85,12 +85,7 @@ void* alarm_main(void*) {
 void ensure_alarm_thread() {
     if (g_alarm_thread != nullptr) return;
     g_alarm_thread = create_internal_thread("cafe alarms", 0);
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 64u << 20);
-    pthread_create(&g_alarm_host, &attr, alarm_main, nullptr);
-    pthread_attr_destroy(&attr);
-    pthread_detach(g_alarm_host);
+    if (!start_host_thread(g_alarm_host, alarm_main, nullptr, 64u << 20, true)) fatal("cannot create the alarm thread");
 }
 
 void OSCreateAlarm(GuestAddress alarm) {

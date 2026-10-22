@@ -363,13 +363,8 @@ void AXInit() {
     }
     g_initialized = true;
     g_ax_thread = create_internal_thread("cafe audio", 0);
-    pthread_t host;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 64u << 20);
-    pthread_create(&host, &attr, ax_main, nullptr);
-    pthread_attr_destroy(&attr);
-    pthread_detach(host);
+    HostThread host;
+    if (!start_host_thread(host, ax_main, nullptr, 64u << 20, true)) fatal("cannot create the audio thread");
 }
 
 void AXQuit() {

@@ -1,5 +1,6 @@
 /local/
 /build*/
+/dist/
 /third_party/
 /generated/
 __pycache__/

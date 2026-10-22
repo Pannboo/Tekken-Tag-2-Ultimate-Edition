@@ -3,8 +3,8 @@
 <img width="1593" height="888" alt="image" src="https://github.com/user-attachments/assets/3bd58409-1442-4ce7-b9a6-8f036f38f4f8" />
 
 
-An unofficial native Linux port of **Tekken Tag Tournament 2 Wii U Edition**,
-made by static recompilation: the game's PowerPC code is translated to C++
+An unofficial native Linux port (with a Windows build) of **Tekken Tag
+Tournament 2 Wii U Edition**, made by static recompilation: the game's PowerPC code is translated to C++
 ahead of time and runs as native x86-64 code on a reimplementation of the
 Wii U's system libraries. There is no CPU emulation; the game's GPU commands
 and shaders are translated to Vulkan as it runs.
@@ -57,9 +57,10 @@ Playable from boot through arcade mode. Not done yet: the Wii U GamePad's
 screen and speaker, online play, the software keyboard and error viewer
 screens, and audio effects the game does not seem to use. Only the European
 version with update 16 is supported (other versions have different code).
-Tested on Linux with an AMD GPU (RADV) under KDE Plasma (Wayland). Design
-notes, measurements and milestones are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Tested on Linux with an AMD GPU (RADV) under KDE Plasma (Wayland). The
+[Windows build](#windows) compiles and passes the tests under Wine, and has
+not been run on Windows itself yet. Design notes, measurements and
+milestones are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## The game
 
@@ -147,7 +148,8 @@ build/ttt2 --update      # after a rebuild: copies the new program into the inst
 ```
 
 Saves go to `~/.local/share/ttt2/save` and compiled shaders to
-`~/.cache/ttt2`. F11 toggles fullscreen.
+`~/.cache/ttt2` (on Windows `%APPDATA%\ttt2\save` and `%LOCALAPPDATA%\ttt2`).
+F11 toggles fullscreen.
 
 | Wii U GamePad | Keyboard |
 | --- | --- |
@@ -180,6 +182,41 @@ a neutral one).
 
 Debugging variables are listed in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#running-the-port).
+
+## Windows
+
+The same code builds for Windows 10 and 11 (x86-64 with AVX2, a Vulkan 1.3
+driver), with clang targeting mingw-w64. One script does the whole build,
+from Linux or from Windows itself:
+
+```bash
+python tools/build_windows.py "/path/to/TEKKEN TAG 2 Wii U EDITION (EU).wua"
+```
+
+On Windows, `tools\build_windows.cmd` runs it (double-click it, or drop
+the `.wua` on it); it needs Python 3 and Git installed. The script fetches
+into `third_party/windows/` a pinned [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+toolchain (clang, lld, libc++) and the port's libraries (SDL3, shaderc, the
+Vulkan loader, OpenSSL, zstd, zlib) as MSYS2's CLANG64 packages, plus CMake
+and Ninja on a Windows host without them (on Linux they must be installed,
+and the game's executable is extracted and recompiled with the native tools:
+`build/` if it is there, else a native build in `build-windows/host`, else
+the Windows ones under Wine). Then it extracts and recompiles the game as
+above (once; `--recompile` redoes it), builds `ttt2.exe` in `build-windows/`
+and puts it with the `.dll` files it needs into `dist/windows/` and
+`dist/ttt2-windows-x64.zip`. Without a game, `--tools-only` builds the tools
+and the tests, and `--test` runs them (under Wine on Linux). The CMake
+toolchain file is [`cmake/toolchain-windows-llvm-mingw.cmake`](cmake/toolchain-windows-llvm-mingw.cmake)
+for building by hand.
+
+`ttt2.exe` works as on Linux: with the `.wua` as its argument it plays
+straight from the archive; `ttt2.exe --install` (or just opening
+`ttt2.exe` with no game installed) copies the game, the program and its
+`.dll` files into a folder chosen in a dialog and adds a Start Menu shortcut.
+It is a windowed program: started from a terminal it prints there, started
+from the desktop its messages go to `%LOCALAPPDATA%\ttt2\ttt2.log`.
+Character packs go in `%APPDATA%\ttt2\characters` (the importer itself
+runs on Linux only). Paths and arguments are UTF-8, as on Linux.
 
 ## Adding fighters
 

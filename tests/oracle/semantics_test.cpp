@@ -9,7 +9,6 @@
 #include "cafe/ppc_ops.h"
 #include "ppc.h"
 
-#include <sys/mman.h>
 
 #include <cfloat>
 #include <cmath>

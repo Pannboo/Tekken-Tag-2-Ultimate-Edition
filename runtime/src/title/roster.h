@@ -14,7 +14,7 @@
 // place in its top row.
 //
 // Packs are read from $TTT2_CHARACTERS, else
-// $XDG_DATA_HOME/ttt2/characters (~/.local/share/ttt2/characters).
+// $XDG_DATA_HOME/ttt2/characters (~/.local/share/ttt2/characters; %APPDATA%\ttt2\characters on Windows).
 
 namespace cafe::title {
 
