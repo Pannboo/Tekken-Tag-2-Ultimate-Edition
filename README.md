@@ -207,7 +207,11 @@ and `meta/` works in place of the `.wua`, its `code/Tekken.rpx` recompiled
 as it is), builds `ttt2.exe` in `build-windows/`
 and puts it with the `.dll` files it needs into `dist/windows/` and
 `dist/ttt2-windows-x64.zip`. Without a game, `--tools-only` builds the tools
-and the tests, and `--test` runs them (under Wine on Linux). The CMake
+and the tests, and `--test` runs them (under Wine on Linux). The tests'
+own needs are fetched too: numpy and Pillow into the Python running the
+script (`--no-pip` leaves that out), `fmt` with the other packages, and
+Dolphin's interpreter into `third_party/ref/dolphin`; with the game known,
+the instruction tests are configured with its `Tekken.rpx`. The CMake
 toolchain file is [`cmake/toolchain-windows-llvm-mingw.cmake`](cmake/toolchain-windows-llvm-mingw.cmake)
 for building by hand.
 

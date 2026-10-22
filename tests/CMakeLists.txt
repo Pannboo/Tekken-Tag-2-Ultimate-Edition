@@ -119,6 +119,6 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME character_import_test
             COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_SOURCE_DIR}/tools/characters/tests")
     else()
-        message(STATUS "character_import_test disabled: needs Python 3 with numpy and Pillow")
+        message(STATUS "character_import_test disabled: needs numpy and Pillow in ${Python3_EXECUTABLE} (python -m pip install numpy pillow)")
     endif()
 endif()

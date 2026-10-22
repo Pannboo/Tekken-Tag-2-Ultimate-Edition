@@ -53,7 +53,19 @@ LLVM_MINGW_URL = "https://github.com/mstorsjo/llvm-mingw/releases/download/{tag}
 # depend on resolved from the repository's database.
 MSYS2_MIRROR = "https://repo.msys2.org/mingw/clang64/"
 MSYS2_PREFIX = "mingw-w64-clang-x86_64-"
-MSYS2_PACKAGES = ["sdl3", "shaderc", "vulkan-headers", "vulkan-loader", "openssl", "zstd", "zlib"]
+MSYS2_PACKAGES = ["sdl3", "shaderc", "vulkan-headers", "vulkan-loader", "openssl", "zstd", "zlib", "fmt"]
+
+# Dolphin's PowerPC interpreter, the reference the instruction tests compare
+# against (a partial checkout; see README: Tests).
+DOLPHIN_URL = "https://github.com/dolphin-emu/dolphin.git"
+DOLPHIN_REVISION = "771fb154059c5812d6a715a23226249cc42877a2"
+DOLPHIN_DIR = ROOT / "third_party" / "ref" / "dolphin"
+DOLPHIN_PATHS = [
+    "/Source/Core/Core/PowerPC/Interpreter/", "/Source/Core/Core/PowerPC/Gekko.h",
+    "/Source/Core/Core/PowerPC/PowerPC.h", "/Source/Core/Core/PowerPC/ConditionRegister.*",
+    "/Source/Core/Common/BitField.h", "/Source/Core/Common/BitUtils.h", "/Source/Core/Common/CommonTypes.h",
+    "/Source/Core/Common/FloatUtils.*", "/Source/Core/Common/Inline.h", "/Source/Core/Common/Swap.h",
+]
 
 # For a Windows host without them.
 CMAKE_VERSION = "3.31.8"
@@ -267,7 +279,12 @@ def resolve_packages(packages):
 def ensure_sysroot(mirror, update):
     marker = SYSROOT / ".ttt2-packages"
     if marker.exists() and not update:
-        return
+        # (Fetched again when the list of packages the port needs changed.)
+        try:
+            if json.loads(marker.read_text()).get("packages") == MSYS2_PACKAGES:
+                return
+        except ValueError:
+            pass
     say("resolving the MSYS2 CLANG64 packages")
     chosen = resolve_packages(read_msys2_database(mirror))
     files = []
@@ -290,8 +307,45 @@ def ensure_sysroot(mirror, update):
                 archive.extractall(SYSROOT, members=members, filter="tar")
             else:
                 archive.extractall(SYSROOT, members=members)
-    marker.write_text("\n".join(files) + "\n")
+    marker.write_text(json.dumps({"packages": MSYS2_PACKAGES, "files": files}, indent=1) + "\n")
     say(f"{len(files)} packages in {SYSROOT}")
+
+
+def ensure_dolphin():
+    """Dolphin's interpreter sources at the pinned revision, for the
+    differential tests; needs git."""
+    if (DOLPHIN_DIR / "Source/Core/Core/PowerPC/Interpreter/Interpreter_Tables.cpp").exists():
+        return
+    if shutil.which("git") is None:
+        say("note: git is not installed, so Dolphin is not fetched and the instruction tests are skipped")
+        return
+    say("fetching Dolphin's PowerPC interpreter for the instruction tests")
+    if DOLPHIN_DIR.exists():
+        shutil.rmtree(DOLPHIN_DIR)
+    DOLPHIN_DIR.mkdir(parents=True)
+    run(["git", "-C", DOLPHIN_DIR, "init", "--quiet"])
+    run(["git", "-C", DOLPHIN_DIR, "remote", "add", "origin", DOLPHIN_URL])
+    run(["git", "-C", DOLPHIN_DIR, "sparse-checkout", "set", "--no-cone", *DOLPHIN_PATHS])
+    run(["git", "-C", DOLPHIN_DIR, "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "origin", DOLPHIN_REVISION])
+    run(["git", "-C", DOLPHIN_DIR, "checkout", "--quiet", "--detach", "FETCH_HEAD"])
+
+
+def ensure_python_modules(install):
+    """numpy and Pillow, which the character importer's test needs: put
+    into this Python with pip unless --no-pip."""
+    try:
+        import numpy, PIL  # noqa: F401
+        return
+    except ImportError:
+        pass
+    if not install:
+        say(f"note: character_import_test is skipped; for it: {sys.executable} -m pip install numpy pillow")
+        return
+    say("installing numpy and Pillow for the character importer's test")
+    try:
+        run([sys.executable, "-m", "pip", "install", "--quiet", "numpy", "pillow"])
+    except subprocess.CalledProcessError:
+        say(f"warning: pip could not install them; character_import_test is skipped")
 
 
 def ensure_build_tools():
@@ -320,12 +374,17 @@ def ensure_build_tools():
 
 # ------------------------------------------------------------ building
 
-def configure(tools, build_dir, generated, extra=()):
+def configure(tools, build_dir, generated, rpx=None, extra=()):
+    # The Python running this script is the one the character importer's
+    # test runs with (CMake would look for its own).
     command = [tools["cmake"], "-S", ROOT, "-B", build_dir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
                f"-DCMAKE_MAKE_PROGRAM={tools['ninja']}", f"-DCMAKE_TOOLCHAIN_FILE={TOOLCHAIN_FILE}",
-               f"-DTTT2_LLVM_MINGW={LLVM_MINGW_DIR}", f"-DTTT2_WINDOWS_SYSROOT={SYSROOT}"]
+               f"-DTTT2_LLVM_MINGW={LLVM_MINGW_DIR}", f"-DTTT2_WINDOWS_SYSROOT={SYSROOT}",
+               f"-DPython3_EXECUTABLE={sys.executable}"]
     if generated is not None:
         command.append(f"-DTTT2_GENERATED_DIR={generated}")
+    if rpx is not None:
+        command.append(f"-DTTT2_RPX={rpx}")  # the instruction tests sample their encodings from it
     run(command + list(extra))
 
 
@@ -376,25 +435,28 @@ def find_rpx():
     return candidates[0] if candidates else None
 
 
-def prepare_generated(game, tools, jobs, build_dir, recompile):
-    """The game's code as C++ in generated/ttt2: extracted from the game
-    into local/wua and recompiled, each step kept from the last run."""
-    generated = ROOT / "generated" / "ttt2"
-    if (generated / "sources.cmake").exists() and not recompile:
-        return generated
-    rpx = find_rpx()
-    if rpx is None and game is None:
-        fail("the game is needed the first time: build_windows.py GAME (a .wua or a game folder), or --tools-only")
+def locate_rpx(game):
+    """The game's executable: in a title folder given (code/, content/,
+    meta/, with the update's files over the game's) or an install folder
+    (the title in game/), else what an archive was extracted to."""
     if game is not None and game.is_dir():
-        # A title folder (code/, content/, meta/, with the update's files
-        # over the game's), or an install folder with the title in game/:
-        # nothing to extract, the executable is right there.
         for candidate in (game / "code" / "Tekken.rpx", game / "game" / "code" / "Tekken.rpx"):
             if candidate.exists():
-                rpx = candidate
-                break
-        else:
-            fail(f"{game} holds no code/Tekken.rpx")
+                return candidate
+        fail(f"{game} holds no code/Tekken.rpx")
+    return find_rpx()
+
+
+def prepare_generated(game, tools, jobs, build_dir, recompile):
+    """The game's code as C++ in generated/ttt2: extracted from the game
+    into local/wua and recompiled, each step kept from the last run.
+    Returns the folder and the executable it was made from."""
+    generated = ROOT / "generated" / "ttt2"
+    rpx = locate_rpx(game)
+    if (generated / "sources.cmake").exists() and not recompile:
+        return generated, rpx
+    if rpx is None and game is None:
+        fail("the game is needed the first time: build_windows.py GAME (a .wua or a game folder), or --tools-only")
     programs = host_tools(tools, jobs, build_dir)
     if rpx is None:
         say("extracting the game's executables and metadata into local/wua")
@@ -406,7 +468,7 @@ def prepare_generated(game, tools, jobs, build_dir, recompile):
     say(f"recompiling {rpx} into {generated}")
     generated.mkdir(parents=True, exist_ok=True)
     run(programs["prefix"] + [programs["cafe-recomp"], rpx, generated])
-    return generated
+    return generated, rpx
 
 
 # ------------------------------------------------------------ packaging
@@ -510,6 +572,7 @@ def main():
     parser.add_argument("--recompile", action="store_true", help="run cafe-recomp again on the extracted game")
     parser.add_argument("--test", action="store_true", help="run the tests (under Wine on Linux)")
     parser.add_argument("--no-package", action="store_true", help="leave dist/ alone")
+    parser.add_argument("--no-pip", action="store_true", help="do not pip install numpy and Pillow (a test needs them)")
     parser.add_argument("--jobs", "-j", type=int, help="parallel compile jobs")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build-windows")
     parser.add_argument("--dist", type=Path, default=ROOT / "dist" / "windows")
@@ -525,33 +588,34 @@ def main():
     ensure_sysroot(mirror, args.update_sysroot)
     if args.sysroot_only:
         return
+    # The programs built here (cafe-recomp, the tests, the test generators
+    # the build runs) load the libraries' .dll files from the MSYS2 folder.
     if HOST_WINDOWS:
-        # The tools built here (cafe-recomp, the tests) load the libraries'
-        # .dll files from the MSYS2 folder.
         os.environ["PATH"] = str(SYSROOT / "bin") + os.pathsep + os.environ.get("PATH", "")
+    else:
+        os.environ["WINEPATH"] = str(SYSROOT / "bin")
+        os.environ.setdefault("WINEDEBUG", "-all")
     tools = ensure_build_tools()
+    ensure_python_modules(not args.no_pip)
+    ensure_dolphin()
 
+    game = Path(args.game).resolve() if args.game else None
+    if game is not None and not game.exists():
+        fail(f"{game} does not exist")
     if args.tools_only:
-        configure(tools, build_dir, None)
+        configure(tools, build_dir, None, locate_rpx(game))
         build(tools, build_dir, [], args.jobs)
     else:
-        game = Path(args.game).resolve() if args.game else None
-        if game is not None and not game.exists():
-            fail(f"{game} does not exist")
-        generated = prepare_generated(game, tools, args.jobs, build_dir, args.recompile)
-        configure(tools, build_dir, generated)
+        generated, rpx = prepare_generated(game, tools, args.jobs, build_dir, args.recompile)
+        configure(tools, build_dir, generated, rpx)
         say("building ttt2.exe (compiling the generated code takes a few minutes)")
         build(tools, build_dir, ["ttt2"], args.jobs)
         if args.test:
             build(tools, build_dir, [], args.jobs)
     if args.test:
         say("running the tests")
-        environment = dict(os.environ)
-        if not HOST_WINDOWS:
-            environment["WINEPATH"] = str(SYSROOT / "bin")
-            environment.setdefault("WINEDEBUG", "-all")
         run([shutil.which("ctest") or Path(tools["cmake"]).with_name("ctest" + (".exe" if HOST_WINDOWS else "")),
-             "--test-dir", build_dir, "--output-on-failure"], env=environment)
+             "--test-dir", build_dir, "--output-on-failure"])
     if not args.tools_only and not args.no_package:
         package(build_dir, args.dist.resolve(), args.dist.resolve().parent / "ttt2-windows-x64.zip")
 
