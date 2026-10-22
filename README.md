@@ -202,7 +202,9 @@ and Ninja on a Windows host without them (on Linux they must be installed,
 and the game's executable is extracted and recompiled with the native tools:
 `build/` if it is there, else a native build in `build-windows/host`, else
 the Windows ones under Wine). Then it extracts and recompiles the game as
-above (once; `--recompile` redoes it), builds `ttt2.exe` in `build-windows/`
+above (once; `--recompile` redoes it; a game folder with `code/`, `content/`
+and `meta/` works in place of the `.wua`, its `code/Tekken.rpx` recompiled
+as it is), builds `ttt2.exe` in `build-windows/`
 and puts it with the `.dll` files it needs into `dist/windows/` and
 `dist/ttt2-windows-x64.zip`. Without a game, `--tools-only` builds the tools
 and the tests, and `--test` runs them (under Wine on Linux). The CMake

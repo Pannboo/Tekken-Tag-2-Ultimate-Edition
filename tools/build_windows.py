@@ -12,8 +12,10 @@ Everything is pinned or resolved from the package database, so the same
 command works on both hosts; on Windows, CMake and Ninja are fetched too
 when they are not installed.
 
-The game is needed once: later runs reuse local/wua and generated/ttt2
-(--recompile redoes the recompilation). Without a game, --tools-only builds
+The game is needed once, as a .wua archive or as a title folder (code/,
+content/, meta/ with update v16 merged in; its code/Tekken.rpx is used as
+it is): later runs reuse local/wua and generated/ttt2 (--recompile redoes
+the recompilation). Without a game, --tools-only builds
 the tools and the tests (and --test runs them, under Wine on Linux).
 """
 
@@ -382,7 +384,17 @@ def prepare_generated(game, tools, jobs, build_dir, recompile):
         return generated
     rpx = find_rpx()
     if rpx is None and game is None:
-        fail("the game is needed the first time: build_windows.py GAME.wua (or --tools-only)")
+        fail("the game is needed the first time: build_windows.py GAME (a .wua or a game folder), or --tools-only")
+    if game is not None and game.is_dir():
+        # A title folder (code/, content/, meta/, with the update's files
+        # over the game's), or an install folder with the title in game/:
+        # nothing to extract, the executable is right there.
+        for candidate in (game / "code" / "Tekken.rpx", game / "game" / "code" / "Tekken.rpx"):
+            if candidate.exists():
+                rpx = candidate
+                break
+        else:
+            fail(f"{game} holds no code/Tekken.rpx")
     programs = host_tools(tools, jobs, build_dir)
     if rpx is None:
         say("extracting the game's executables and metadata into local/wua")
