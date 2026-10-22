@@ -525,6 +525,10 @@ def main():
     ensure_sysroot(mirror, args.update_sysroot)
     if args.sysroot_only:
         return
+    if HOST_WINDOWS:
+        # The tools built here (cafe-recomp, the tests) load the libraries'
+        # .dll files from the MSYS2 folder.
+        os.environ["PATH"] = str(SYSROOT / "bin") + os.pathsep + os.environ.get("PATH", "")
     tools = ensure_build_tools()
 
     if args.tools_only:
