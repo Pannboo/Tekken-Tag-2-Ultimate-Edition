@@ -208,7 +208,12 @@ def ensure_llvm_mingw(update):
         extract_zip(archive, LLVM_MINGW_DIR, strip=1)
     else:
         extract_tar(archive, LLVM_MINGW_DIR, strip=1)
-    for needed in ("x86_64-w64-mingw32/include/c++/v1/cstdint", "x86_64-w64-mingw32/lib/libc++.a"):
+    # (The C++ headers are in the shared include/ folder in the Windows zip
+    # and reached through a per-target link in the Linux tarball.)
+    headers = ("include/c++/v1/cstdint", "x86_64-w64-mingw32/include/c++/v1/cstdint")
+    if not any((LLVM_MINGW_DIR / h).exists() for h in headers):
+        fail(f"{asset} did not extract as expected: the C++ headers are missing")
+    for needed in ("x86_64-w64-mingw32/lib/libc++.a", "bin/x86_64-w64-mingw32-clang++" + (".exe" if HOST_WINDOWS else "")):
         if not (LLVM_MINGW_DIR / needed).exists():
             fail(f"{asset} did not extract as expected: {needed} is missing")
     marker.write_text(LLVM_MINGW_TAG + "\n")
